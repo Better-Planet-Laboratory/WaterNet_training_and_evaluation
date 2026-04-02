@@ -40,20 +40,7 @@ def classify_data(arr, threshold=0.5):
 def get_pixel_mask(data: torch.Tensor, included_values: list[int]):
     return torch.isin(data, torch.tensor(included_values))
 
-def compute_metrics(inputs_np: np.ndarray, targets_np: np.ndarray):
-
-    tp = len(inputs_np[(inputs_np == 1) & (targets_np == 1)])
-    tn = len(inputs_np[(inputs_np == 0) & (targets_np == 0)])
-    fp = len(inputs_np[(inputs_np == 1) & (targets_np == 0)])
-    fn = len(inputs_np[(inputs_np == 0) & (targets_np == 1)])
-    recall = tp / (tp + fn)
-    specificity = tn / (tn + fp)
-    precision = tp / (tp + fp)
-    f1 = (2 * tp) / ((2 * tp) + fp + fn)
-
-    return {'recall': recall, 'precision': precision, 'f1': f1, 'specificity': specificity}
-
-def compute_metrics_at_threshold(targets: torch.Tensor, probabilities: torch.Tensor):
+def compute_metrics_at_thresholds(targets: torch.Tensor, probabilities: torch.Tensor):
     inputs_np = probabilities.detach().cpu().float().numpy().flatten()
     targets_np = targets.detach().cpu().float().numpy().flatten()
 
@@ -62,18 +49,20 @@ def compute_metrics_at_threshold(targets: torch.Tensor, probabilities: torch.Ten
     inputs_sorted = inputs_np[sort_idx]
     targets_sorted = targets_np[sort_idx].astype(np.int32)
 
-    # Cumulative TP and FP as we lower the threshold
-    tp_cumsum = np.cumsum(targets_sorted)
-    fp_cumsum = np.cumsum(1 - targets_sorted)
+    # Append np.inf to capture boundary where classifier always predicts negative class
+    inputs_sorted = np.append([np.inf], inputs_sorted)
 
-    total_pos = targets_np.sum()
+    # Cumulative TP and FP as we lower the threshold
+    tp_cumsum = np.append([0], np.cumsum(targets_sorted))
+    fp_cumsum = np.append([0], np.cumsum(1 - targets_sorted))
+
+    total_pos = targets_np.sum(dtype=np.int64)
     total_neg = len(targets_np) - total_pos
 
-    # Unique threshold indices (avoid duplicate thresholds)
-    # threshold_idxs = np.where(np.diff(inputs_sorted, prepend=np.inf))[0]
-    threshold_idxs = np.where(np.diff(inputs_sorted, prepend=np.inf))[0]
+    # Unique threshold indices
+    threshold_idxs = np.where(np.diff(inputs_sorted, append=np.inf))[0]
 
-    thresholds = inputs_sorted[threshold_idxs]
+    thresholds =  inputs_sorted[threshold_idxs]
     tp = tp_cumsum[threshold_idxs]
     fp = fp_cumsum[threshold_idxs]
     fn = total_pos - tp
@@ -89,26 +78,11 @@ def compute_metrics_at_threshold(targets: torch.Tensor, probabilities: torch.Ten
         for i, t in enumerate(thresholds)
     }
 
-    # return metrics_list
-
     # make into dataframe
     metrics_df = pd.DataFrame.from_dict(metrics_list, orient='index').rename_axis('probability').reset_index()
+    metrics_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
     return metrics_df
-
-# TODO: Start here and validate output against sklearn
-
-# def compute_metrics_at_thresholds(targets: torch.Tensor, probabilities: torch.Tensor):
-#
-#     targets_np = targets.detach().to('cpu').float().numpy()
-#     thresholds = np.unique(probabilities)
-#     metrics_list = {}
-#     for t in tqdm(thresholds):
-#         inputs_np = classify_data(probabilities, threshold=t).detach().to('cpu').float().numpy()
-#         metrics_list[t] = compute_metrics(inputs_np, targets_np)
-#
-#     # make into dataframe
-#     metrics_df = pd.DataFrame.from_dict(metrics_list, orient='index').rename_axis('probability').reset_index()
-#     return metrics_df
 
 def return_roc(inputs_dir: Path =  ppaths.model_inputs_832 / 'val_data',
        outputs_dir: Path = ppaths.model_inputs_832 / 'output_val_data_841',
@@ -135,22 +109,6 @@ def return_roc(inputs_dir: Path =  ppaths.model_inputs_832 / 'val_data',
     roc_df = compute_metrics_at_thresholds(obs_binned, wn)
 
     return roc_df
-
-
-
-    # pull out desirable thresholds
-    available_metrics = ['recall', 'precision', 'f1', 'specificity']
-    for m in optimize_for:
-        if m not in available_metrics:
-           TypeError(f'No metrics for {m}. Choose one or many of {available_metrics}')
-        m_at_confidence = roc_df[roc_df[m] >= confidence_level].copy()
-        max_f1_at_m_ci = m_at_confidence.iloc[[m_at_confidence['f1'].argmax()]]
-
-
-
-
-
-
 
 
 
