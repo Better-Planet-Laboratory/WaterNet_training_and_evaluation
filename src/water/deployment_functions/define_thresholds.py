@@ -15,7 +15,7 @@ def get_model_filenames(data_dir: Path):
         if bbox1.is_dir():
             second_bboxes = bbox1.iterdir()
             list_of_subdirs = [bbox2.name for bbox2 in second_bboxes]
-            filenames_dict[bbox1.name] = list_of_subdirs[0]  # only one nested bbox
+            filenames_dict[bbox1.name] = list_of_subdirs[0]  # assumes only one nested bbox
         elif bbox1.suffix == '.tif':
             filenames_dict[bbox1.name] = ''
         else:
@@ -41,12 +41,7 @@ def harmonize_data(arr):
     return F.max_pool2d(arr.unsqueeze(0), kernel_size=2).squeeze(0)
 
 def classify_data(arr, threshold=0.5):
-    binned = (arr >= threshold)
-    if isinstance(binned, torch.Tensor):
-        binned = binned.to(int)
-    if isinstance(binned, np.ndarray):
-        binned = binned.astype(int)
-    return binned
+    return (arr >= threshold) * 1
 
 def save_data(arr, save_filename):
     profile = dict(
@@ -71,17 +66,17 @@ def compute_metrics_at_thresholds(targets: torch.Tensor, probabilities: torch.Te
     # Append np.inf to capture boundary where classifier always predicts negative class
     inputs_sorted = np.append([np.inf], inputs_sorted)
 
-    # Cumulative TP and FP as we lower the threshold
+    # Cumulative TP and FP as lower the threshold
     tp_cumsum = np.append([0], np.cumsum(targets_sorted))
     fp_cumsum = np.append([0], np.cumsum(1 - targets_sorted))
 
+    # Unique thresholds
+    threshold_idxs = np.where(np.diff(inputs_sorted, append=np.inf))[0]
+    thresholds =  inputs_sorted[threshold_idxs]
+
+    # Confusion matrix
     total_pos = targets_np.sum(dtype=np.int64)
     total_neg = len(targets_np) - total_pos
-
-    # Unique threshold indices
-    threshold_idxs = np.where(np.diff(inputs_sorted, append=np.inf))[0]
-
-    thresholds =  inputs_sorted[threshold_idxs]
     tp = tp_cumsum[threshold_idxs]
     fp = fp_cumsum[threshold_idxs]
     fn = total_pos - tp
@@ -130,26 +125,6 @@ def return_roc(inputs_dir: Path =  ppaths.model_inputs_832 / 'val_data',
 
     return roc_df
 
-def summarize_roc(roc_df, alpha=0.10):
-
-    out_vars = ['probability',  'f1', 'recall', 'precision', 'specificity']
-
-    # best of each:
-    f1 = roc_df.iloc[[roc_df['f1'].argmax()]][out_vars]
-
-    # best where each is above requested ci
-    ci = 1 - alpha
-    recall_ci = roc_df[roc_df.recall >= ci].copy()
-    max_p_at_recall_ci = recall_ci.iloc[[recall_ci['precision'].argmax()]][out_vars]
-    precision_ci = roc_df[roc_df.precision >= ci].copy()
-    max_r_at_precision_ci = precision_ci.iloc[[precision_ci['recall'].argmax()]][out_vars]
-
-    # put together
-    smry_df = pd.concat([f1, max_p_at_recall_ci, max_r_at_precision_ci], axis=0,
-                        keys=['f1', f'best_p_at_recall{ci}', f'best_r_at_precision{ci}'], names=['best_set']).droplevel(1)
-
-    return smry_df
-
 def get_probability_at_settings(roc: pd.DataFrame, recall_min=None, precision_min=None):
     """
     Returns the probability at which the minimum given recall and/or precision is achieved.
@@ -193,6 +168,7 @@ def bin_rasters_at_probability(probability: float, base_dir_path: Path, save_dir
     # load rasters
     raster_file_names = get_model_filenames(data_dir=base_dir_path)
 
+    # apply probability threshold
     for f in tqdm(raster_file_names, desc='Deploying probability threshold to rasters...'):
         raster_file = base_dir_path / f
         raster = rxr.open_rasterio(raster_file)
@@ -239,7 +215,10 @@ if __name__ == '__main__':
     water_classes = [k for k, v in ww_value_dict.items() if v >= 1]
 
     # get confusion matrix + metrics on masked data for each probability threshold using validation dataset
-    roc_water = return_roc(mask_values=[0] + water_classes)
+    roc_water = return_roc(
+        inputs_dir=ppaths.model_inputs_832 / 'val_data',
+       outputs_dir=ppaths.model_inputs_832 / 'output_val_data_841',
+        mask_values=[0] + water_classes)
 
     # pull out desired probability thresholds
     p_recall90 = get_probability_at_settings(roc_water, recall_min=0.9)
@@ -253,3 +232,72 @@ if __name__ == '__main__':
                                base_dir_path=ppaths.model_inputs_832 / 'output_test_data_841',
                                save_dir_path=ppaths.model_inputs_832 / 'precision90_test_data_841')
 
+    # review metrics on test dataset
+    pd.set_option('display.float_format', lambda x: '%.3f' % x)
+    def compute_metric_at_binary(targets: torch.Tensor, predictions: torch.Tensor):
+        predictions_np = predictions.detach().cpu().float().numpy().flatten()
+        targets_np = targets.detach().cpu().float().numpy().flatten()
+
+        tp = ((targets_np == 1) & (predictions_np == 1)).sum()
+        fp = ((targets_np == 0) & (predictions_np == 1)).sum()
+        tn = ((targets_np == 0) & (predictions_np == 0)).sum()
+        fn = ((targets_np == 1) & (predictions_np == 0)).sum()
+        total_pos = (targets_np == 1).sum()
+        total_neg = (targets_np == 0).sum()
+
+        recall = tp / (tp + fn)
+        specificity = tn / (tn + fp)
+        precision = tp / (tp + fp)
+        f1 = (2 * tp) / ((2 * tp) + fp + fn)
+
+        metrics_list = {
+            'tp': tp, 'fp': fp, 'fn': fn, 'tn': tn, 'total_pos': total_pos, 'total_neg': total_neg,
+            'recall': recall, 'precision': precision, 'f1': f1, 'specificity': specificity
+        }
+
+        # make into dataframe
+        metrics_df = pd.DataFrame.from_dict(metrics_list, orient='index').rename_axis('probability').reset_index()
+        metrics_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+        return metrics_df
+
+    def return_metrics_at_binary(
+            predictions_dir,
+            targets_dir: Path,
+            mask_values: list[int] = []):
+
+        # load data
+        filenames = get_model_filenames(data_dir=targets_dir)
+        obs_files = [targets_dir / f / 'waterways_burned.tif' for f in filenames]
+        wn_files = [predictions_dir / f for f in filenames]
+
+        obs = harmonize_data(load_model_dataset(obs_files))
+        wn_binned = load_model_dataset(wn_files)
+
+        # categorize observed data
+        obs_binned = classify_data(obs, threshold=1)
+
+        # mask data, if requested
+        if len(mask_values) > 0:
+            mask = get_pixel_mask(obs, mask_values)
+            obs_binned = obs_binned[mask]
+            wn_binned = wn_binned[mask]
+
+        # evaluate metrics
+        metrics_df = compute_metric_at_binary(obs_binned, wn_binned)
+
+        return metrics_df
+
+    test_metrics_at_recall90 = return_metrics_at_binary(
+        targets_dir=ppaths.model_inputs_832 / 'test_data',
+        predictions_dir=ppaths.model_inputs_832 / 'recall90_test_data_841',
+        mask_values=[0] + water_classes
+    )
+    print(test_metrics_at_recall90)
+
+    test_metrics_at_precision90 = return_metrics_at_binary(
+        targets_dir=ppaths.model_inputs_832 / 'test_data',
+        predictions_dir=ppaths.model_inputs_832 / 'precision90_test_data_841',
+        mask_values=[0] + water_classes
+    )
+    print(test_metrics_at_precision90)
