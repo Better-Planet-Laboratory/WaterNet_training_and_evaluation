@@ -1,8 +1,6 @@
 # Overview
 
-
-This repository is associated with the forthcoming paper "Pierson, Matthew., and Mehrabi, Zia. 2024. Mapping waterways worldwide with deep learning. arXiv.  	
-https://doi.org/10.48550/arXiv.2412.00050". Please do cite this paper and attribute the work if using the model or work. The data outputs of this model (raster and vectorized versions) are also stored and available from the following source: Pierson, Matthew., Mehrabi. Zia. 2024, WaterNet Outputs and Code, https://doi.org/10.7910/DVN/YY2XMG, Harvard Dataverse.
+This repository is associated with the forthcoming paper "Pierson, Matthew; Fankhauser, Katie; and Mehrabi, Zia. 2026. Mapping waterways worldwide with deep learning. arXiv. https://doi.org/10.48550/arXiv.2412.00050". Please do cite this paper and attribute the work if using the model or work. The data outputs of this model (raster and vectorized versions) are stored and available under CC-BY-SA 4.0 from the following source: Pierson, Matthew; Fankhauser, Katie; and Mehrabi, Zia. 2026. WaterNet Global Waterways, https://source.coop/fika/waternet, Source Cooperative.
 
 # Setup
 
